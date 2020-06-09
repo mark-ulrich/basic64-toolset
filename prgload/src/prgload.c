@@ -370,12 +370,13 @@ char* token_list[] =
 
 
 /* Maximum line length in C64 BASIC is 80 chars (two physical 40-char
-   lines). Add one byte for NULL terminator */
-#define MAX_DATA_LEN  81
+   lines). Allocate 512 bytes (maybe overkill?) for potential
+   insertion of PETSCII placeholder strings. */
+#define MAX_DATA_LINE_LEN  512
 struct basic_line
 {
   u16    line_no;
-  byte_t data[MAX_DATA_LEN];
+  char   data[MAX_DATA_LINE_LEN];
 };
 
 /*
@@ -426,20 +427,21 @@ MemInsert(byte_t* dest, byte_t* src, int offset, u16 len)
   keyword/operator.
 */
 void
-DecodeLine(byte_t* line)
+DecodeLine(char* line)
 {
   for (u8 i = 0;
-       i < strlen((char*)line);
+       i < strlen(line);
        ++i)
   {
-    if (line[i] < 0x80) continue;
-    char* keyword = TranslateToken(line[i]);
+    byte_t byte = (unsigned char)line[i];
+    if (byte < 0x80) continue;
+    char* keyword = TranslateToken(byte);
     if (!keyword)
     {
       continue;
     }
     //  printf(": %s\n", keyword);
-    MemInsert(line, (byte_t*)keyword, i, strlen(keyword));
+    MemInsert((byte_t*)line, (byte_t*)keyword, i, strlen(keyword));
   }
 }
 
@@ -510,12 +512,7 @@ main(int argc, char* argv[])
 
     /* grab line from buffer up to NULL terminator */
     line.line_no = GETWORD(buffer, line_offset+2);
-    for (int i = 0;
-         buffer[line_offset+i+4];
-         ++i)
-    {
-      line.data[i] = buffer[line_offset+i+4];
-    }
+    strncpy(line.data, (char*)&buffer[line_offset+4], MAX_DATA_LINE_LEN);
 
     DecodeLine(line.data);
     printf("%u %s\n", line.line_no, line.data);

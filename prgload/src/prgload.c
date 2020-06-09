@@ -421,6 +421,29 @@ MemInsert(byte_t* dest, byte_t* src, int offset, u16 len)
 }
 
 /*
+  TranslatePETSCIIToASCII
+  
+  Translate a string from PETSCII encoding to ASCII, inserting
+  placeholder strings where necessary.
+*/
+void
+TranslatePETSCIIToASCII(char* line)
+{
+  for (u16 i = 0;
+       i < strlen(line);
+       ++i)
+  {
+    /* TODO: This is inefficient. Bytes in which PETSCII and ASCII are
+       equivalent should be checked for and skipped */
+    byte_t byte = (byte_t)line[i];
+    char* ascii = PETSCII_table[byte];
+    u16 ascii_len = strlen(ascii);
+    MemInsert((byte_t*)line, (byte_t*)ascii, i, ascii_len);
+    i += ascii_len - 1;
+  }
+}
+
+/*
   DecodeLine
 
   Replace all BASIC tokens in line with the corresponding BASIC
@@ -488,9 +511,9 @@ main(int argc, char* argv[])
   {
     if (argv[argi][0] != '-')
     {
-      /* NOTE: This will always save the *last* non-option (i.e. does
-         not begin with '-') argument as the path of the PRG file to
-         load. Is this really the desirable behavior? */
+      /* NOTE: This should always save the *last* non-option
+         (i.e. does not begin with '-') argument as the path of the
+         PRG file to load. Is this really the desirable behavior? */
       path = argv[argi];
       continue;
     }
@@ -505,8 +528,6 @@ main(int argc, char* argv[])
     struct basic_line line;
     memset(&line, 0, sizeof(struct basic_line));
 
-    /* printf("Current line offset: %u\n", line_offset); */
-
     u16 next_line_offset = GETWORD(buffer, line_offset);
     if (!next_line_offset) break;
 
@@ -515,6 +536,7 @@ main(int argc, char* argv[])
     strncpy(line.data, (char*)&buffer[line_offset+4], MAX_DATA_LINE_LEN);
 
     DecodeLine(line.data);
+    TranslatePETSCIIToASCII(line.data);
     printf("%u %s\n", line.line_no, line.data);
 
     /* Compute next line offset into buffer. The +2 accounts for first

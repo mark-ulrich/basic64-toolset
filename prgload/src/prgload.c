@@ -1,8 +1,8 @@
 /*
   prgload
 
-  A utlitiy to translate a Commodore 64 PRG file into a
-  BASIC source file.
+  A simple utlitiy to translate a Commodore 64 PRG file into a BASIC
+  source file.
  */
 
 #include <stdint.h>
@@ -20,7 +20,12 @@ typedef uint16_t  u16;
 
 typedef u8  byte_t;
 
-char* mnemonics[] =
+
+#define GETWORD(buf,i) ((buf[i+1] << 8) | buf[i])
+
+
+/* Offsets in to this table equal the token value - 0x80 */
+char* token_list[] =
 {
     /* 80 */ "END",
     /* 81 */ "FOR",
@@ -101,10 +106,11 @@ char* mnemonics[] =
 };
 
 
-#define MAX_DATA_LEN  80
+/* Maximum line length in C64 BASIC is 80 chars (two physical 40-char
+   lines). Add one byte for NULL terminator */
+#define MAX_DATA_LEN  81
 struct basic_line
 {
-  u16    next_line_offset;
   u16    line_no;
   byte_t data[MAX_DATA_LEN];
 };
@@ -117,33 +123,45 @@ struct basic_line
 char*
 TranslateToken(byte_t token)
 {
-  return mnemonics[token - 0x80];
+  return token_list[token - 0x80];
 }
 
+/*
+  MemInsert
+  
+  Insert len bytes from src into byte buffer dst at offset, replacing
+  the single byte at offset, and all bytes after offset by len to
+  accomodate the insertion of src.
+  
+  NOTE: This function *DOES NOT* perform any bounds checking. Use with
+  caution.
+
+*/
 void
 MemInsert(byte_t* dest, byte_t* src, int offset, u16 len)
 {
-  int i;
-  i = 0;
-  /* printf("%u\n", offset); */
-  while (dest[i++]);
-  /* printf("%u\n", i); */
-  for (i;
+  int line_end = 0;
+  while (dest[line_end++]);
+  for (int i = line_end;
        i >= offset;
        --i)
   {
-    /* printf("%u\n", i); */
     dest[i+len] = dest[i+1];
   }
-  for (i = 0;
+  for (int i = 0;
        i < len;
        ++i)
   {
     dest[offset+i] = src[i];
   }
-  /* printf("%s\n", (char*)dest); */
 }
 
+/*
+  DecodeLine
+
+  Replace all BASIC tokens in line with the corresponding BASIC
+  keyword/operator.
+*/
 void
 DecodeLine(byte_t* line)
 {
@@ -162,65 +180,87 @@ DecodeLine(byte_t* line)
   }
 }
 
+/*
+  LoadPRGFile
 
-int
-main(int argc, char* argv[])
+  Load a PRG file located at path into a buffer.
+
+  Return: Pointer to byte buffer
+*/
+byte_t*
+LoadPRGFile(char* path)
 {
-  char* path;
-  byte_t* buffer;
-  FILE* fp;
-  struct stat fs;
-
-  path = 0;
-  for(u8 argi = 1;
-      argi < argc;
-      ++argi)
-  {
-    if (argv[argi][0] != '-')
-    {
-      path = argv[argi];
-      continue;
-    }
-  }
-
   if (!path)
   {
     fprintf(stderr, "Please provide a path to a PRG file\n");
     exit(-1);
   }
 
-  fp = fopen(path, "rb");
+  FILE* fp = fopen(path, "rb");
   if (!fp)
   {
     fprintf(stderr, "Failed to open file %s\n", path);
     exit(-1);
   }
+  struct stat fs;
   fstat(fileno(fp), &fs);
-  buffer = (byte_t*)malloc(fs.st_size);
+  byte_t* buffer = (byte_t*)malloc(fs.st_size);
   fread(buffer, 1, fs.st_size, fp);
   fclose(fp);
 
-  u16 load_address = (buffer[1] << 8) |  buffer[0];
-  /* printf("Load address: 0x%04x\n", load_address); */
-  int i = 2;                /* skip load address */
-  while (i < fs.st_size)
+  return buffer;
+}
+
+
+int
+main(int argc, char* argv[])
+{
+  char* path = 0;
+  /* allows for future expansion with command line args */
+  for(u8 argi = 1;
+      argi < argc;
+      ++argi)
+  {
+    if (argv[argi][0] != '-')
+    {
+      /* NOTE: This will always save the *last* non-option (i.e. does
+         not begin with '-') argument as the path of the PRG file to
+         load. Is this really the desirable behavior? */
+      path = argv[argi];
+      continue;
+    }
+  }
+
+  byte_t* buffer = LoadPRGFile(path);
+
+  u16 load_address = GETWORD(buffer, 0);
+  u16 line_offset = 2;
+  while (line_offset)
   {
     struct basic_line line;
-    
     memset(&line, 0, sizeof(struct basic_line));
-    /* printf("i: 0x%04x\n", i); */
-    line.next_line_offset = ((buffer[i+1] << 8) | buffer[i]);
-    if (line.next_line_offset == 0)
-      break;
-    line.next_line_offset -= load_address;
-    i+=2;
-    line.line_no = (buffer[i+1] << 8) | buffer[i];
-    i+=2;
-    strncpy((char*)line.data, (char*)&buffer[i], MAX_DATA_LEN);
-    i += strlen((char*)line.data)+1;
-    /* printf("%s\n", (char*)line.data); */
+
+    /* printf("Current line offset: %u\n", line_offset); */
+
+    u16 next_line_offset = GETWORD(buffer, line_offset);
+    if (!next_line_offset) break;
+
+    /* grab line from buffer up to NULL terminator */
+    line.line_no = GETWORD(buffer, line_offset+2);
+    for (int i = 0;
+         buffer[line_offset+i+4];
+         ++i)
+    {
+      line.data[i] = buffer[line_offset+i+4];
+    }
+
     DecodeLine(line.data);
     printf("%u %s\n", line.line_no, line.data);
+
+    /* Compute next line offset into buffer. The +2 accounts for first
+       2 bytes of buffer (program load address) */
+    line_offset = next_line_offset - load_address + 2; 
+    /* printf("Next line offset: %u\n", line_offset); */
   }
 
   return 0;

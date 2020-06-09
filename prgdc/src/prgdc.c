@@ -1,8 +1,7 @@
 /*
-  prgload
+  prgdc
 
-  A simple utlitiy to translate a Commodore 64 PRG file into a BASIC
-  source file.
+  A simple Commodore 64 PRG file decompiler.
  */
 
 #include <stdint.h>
@@ -542,7 +541,6 @@ main(int argc, char* argv[])
     /* Compute next line offset into buffer. The +2 accounts for first
        2 bytes of buffer (program load address) */
     line_offset = next_line_offset - load_address + 2; 
-    /* printf("Next line offset: %u\n", line_offset); */
   }
 
   return 0;

@@ -34,6 +34,9 @@ typedef u8  byte_t;
 #endif
 
 
+#define MAX_LABEL_LENGTH  32
+
+
 /* Translation table for keycodes between modern ASCII standard and
    C64 PETSCII */
 char* PETSCII_table[] =
@@ -383,13 +386,14 @@ char* token_list[] =
    lines). Allocate a very large buffer for potential insertion of
    PETSCII placeholder strings. */
 #define MAX_SOURCE_LINE_LEN  2048
-#define MAX_ENCODED_LINE_LEN 80
 #define MAX_LINE_NUMBER      63999
 struct BASIC_line
 {
   s32    line_no;
+  u32    source_line_number;
   char   source_line[MAX_SOURCE_LINE_LEN];
-  byte_t tokenized_line[MAX_ENCODED_LINE_LEN];
+  byte_t tokenized_line[MAX_SOURCE_LINE_LEN];
+  char   label[MAX_LABEL_LENGTH];
 
   struct BASIC_line*   next;
 };
@@ -422,16 +426,50 @@ struct global_args args;
   Displays a message for BASIC syntax errors.
 */
 void
-SyntaxError(u16 line_no, char* msg, ...)
+SyntaxError(s32 line_no, char* msg, ...)
 {
+  /* TODO: Rework this to use the line number within the source file
+     instead of the BASIC line number */
   char buffer[512];
   va_list args;
   va_start(args, msg);
   vsprintf(buffer, msg, args);
   va_end(args);
-  fprintf(stderr, "SYNTAX ERROR: Line %u: %s\n", line_no, buffer);
+  fprintf(stderr, "SYNTAX ERROR: ");
+  if (line_no >= 0)
+    fprintf(stderr, "Line %u: ", (u16)line_no);
+  fprintf(stderr, "%s\n", buffer);
 
   exit(-1);
+}
+
+
+/*
+  StripWhitespace
+
+  Remove beginning and trailing whitespace from line.
+*/
+void
+StripWhitespace(char* line)
+{
+  if (strlen(line) < 1) return;
+
+  /* Skip past beginning whitespace */
+  u16 begin = 0;
+  while (line[begin] &&
+         (line[begin] == ' ' ||
+          line[begin] == '\t'))
+    ++begin;
+
+  /* Copy from beginning of non-whitespace to front of line */
+  if (begin > 0)
+    strcat(line, &line[begin]);
+  u16 end = strlen(line);
+  while (end > 0 &&
+         (line[end] == ' ' ||
+          line[end] == '\t'))
+    --end;
+  line[end+1] = '\0';
 }
 
 
@@ -452,6 +490,98 @@ ConvertLowercaseToUppercase(char* line)
       *line -= 0x20;
     ++line;
   }
+}
+
+
+/*
+  FindTokenIndex
+
+  Return the index of keyword in token_list.
+*/
+int
+FindTokenIndex(char* keyword)
+{
+  for (u8 i = 0;
+       i < (sizeof(token_list) / sizeof(char*));
+       ++i)
+  {
+    if (strcmp(keyword, token_list[i]) == 0)
+      return (int)i;
+  }
+  return -1;
+}
+
+
+/*
+  IsValidLabelChar
+  
+  Checks if c is a valid label character.
+
+  Returns TRUE if c is a valid label character, FALSE otherwise.
+*/
+BOOL
+IsValidLabelChar(char c)
+{
+  if (isalnum(c) ||
+      c == '_') 
+    return TRUE;
+  else
+    return FALSE;
+}
+
+
+/*
+  IsLabel
+
+  Determine if a line is a label. Labels must follow the following
+  format:
+
+   - Must be alone on a line Must be no longer than MAX_LABEL_LENGTH
+     (32) *without* the trailing colon
+   - Are case insensitive
+   - Must not be identical to a reserved BASIC keyword
+   - Must be begin with an alphabetic character
+   - Must only contain alphanumeric characters or underscores
+   - Must end with a colon
+   
+  Returns TRUE if line designates a label, FALSE otherwise
+*/
+BOOL
+IsLabel(char* line)
+{
+  StripWhitespace(line);
+
+  char* c = line;
+  if (strlen(line) > MAX_LABEL_LENGTH+1)
+    return FALSE;
+  if (!isalpha(*c))
+    return FALSE;
+  while (*c != ':')
+  {
+    if (!IsValidLabelChar(*c))
+      return FALSE;
+    ++c;
+  }
+  if (*(++c) != '\0')
+    return FALSE;
+
+  if (strlen(line) > MAX_LABEL_LENGTH+1)
+  {
+    SyntaxError(-1, "Label length too long (maximum: %u)", MAX_LABEL_LENGTH);
+    return FALSE;  /* This shouldn't actually return. (SyntaxError exits) */
+  }
+
+  /* Check for conflict with BASIC keywords */
+  char temp_label[MAX_LABEL_LENGTH+1];
+  /* -1 to remove trailing colon */
+  strncpy(temp_label, line, strlen(line)-1);
+  if (FindTokenIndex(temp_label) >= 0)
+  {
+    SyntaxError(-1, "Label conflicts with BASIC keyword: %s\n", temp_label);
+    return FALSE;  /* This shouldn't actually return. (SyntaxError exits) */
+  }
+
+  return TRUE;
 }
 
 
@@ -487,24 +617,30 @@ ReplaceStringWithByte(byte_t* line, char* target, byte_t byte)
 
 
 /*
-  FindTokenIndex
-
-  Return the index of keyword in token_list.
+  ReplaceStringWithString
+  
+  Replace first occurance in dst of target with sub.
+  
+  Returns non-zero if a replacement occurs, zero in no replacement
+  occurs.
 */
-
 int
-FindTokenIndex(char* keyword)
+ReplaceStringWithString(char* dst, char* target, char* sub)
 {
-  for (u8 i = 0;
-       i < (sizeof(token_list) / sizeof(char*));
-       ++i)
-  {
-    if (strcmp(keyword, token_list[i]) == 0)
-      return (int)i;
-  }
-  return -1;
-}
+  char* location = strstr(dst, target);
+  if (!location) return 0;
 
+  u16 target_len = strlen(target);
+  u16 sub_len    = strlen(sub);
+
+  char buffer[MAX_SOURCE_LINE_LEN];
+  memset(buffer, 0, MAX_SOURCE_LINE_LEN);
+  strncpy(buffer, sub, sub_len);
+  strcat(buffer, &location[target_len]);
+  strcpy(location, buffer);
+
+  return 1;
+}
 
 /*
   FindPETSCIIPlaceholderIndex
@@ -577,15 +713,123 @@ TranslateASCIIToPETSCII(byte_t* line)
   }
 }
 
+/*
+  Program_PrintLines
+
+  Print each line of the program. Used for debugging purposes.
+*/
+void
+Program_PrintLines(struct BASIC_program* program)
+{
+  assert(program);
+  assert(program->first_line);
+
+  struct BASIC_line* curr_line = program->first_line;
+  while (curr_line)
+  {
+    if (strlen(curr_line->label))
+      printf("\n%s:\n", curr_line->label);
+    int digits_printed = 0;
+    printf("%d%n %s\n", curr_line->line_no, &digits_printed, curr_line->source_line);
+    if (strlen((char*)curr_line->tokenized_line) > 0)
+    {
+      while (digits_printed-- >= 0)
+        printf(" ");
+      printf("%s\n", (char*)curr_line->tokenized_line);
+    }
+    curr_line = curr_line->next;
+  }
+}
 
 /*
-  EncodeLine
+  Program_AddLine
+  
+  Add line to program line list
+*/
+void
+Program_AddLine(struct BASIC_program* program, struct BASIC_line* line)
+{
+  if (line->line_no > MAX_LINE_NUMBER)
+  {
+    SyntaxError(line->line_no, "Line number too high (maximum: %d)", MAX_LINE_NUMBER);
+  }
+
+  /* Generate a line number if none was provided */
+  if (line->line_no < 0)
+    line->line_no = program->last_line_no + 1;
+
+  /* Are we the first line? */
+  if (!program->first_line)
+  {
+    program->first_line = line;
+    program->last_line_no = line->line_no;
+    return;
+  }
+
+  /* We *are NOT* the first line */
+  struct BASIC_line* prev_line = 0;
+  struct BASIC_line* curr_line = program->first_line;
+  while (curr_line)
+  {
+    /* Check for duplicate line numbers */
+    if (line->line_no == curr_line->line_no)
+    {
+      fprintf(stderr, "%s\n", (char*)line->source_line);
+      SyntaxError(line->line_no, "Duplicate line number");
+    }
+    /* Sort by line numbers, ascending */
+    if (line->line_no < curr_line->line_no) 
+    {
+      prev_line->next = line;
+      line->next = curr_line;
+      program->last_line_no = line->line_no;
+      return;
+    }
+
+    prev_line = curr_line;
+    curr_line = curr_line->next;
+  }
+  /* We've reached the end of the list; append line */
+  prev_line->next = line;
+  program->last_line_no = line->line_no;
+}
+
+
+/*
+  Program_FindLineNumberByLabel
+  
+  Find the BASIC line number in program associated with label.
+  
+  Returns the associated line number if the label exists, or -1 if the
+  label does not exist.
+*/
+s32
+Program_FindLineNumberByLabel(struct BASIC_program* program, char* label)
+{
+  if (!program ||
+      !program->first_line)
+    return -1; /* Empty or non-existing program */
+
+  struct BASIC_line* curr_line = program->first_line;
+  while (curr_line)
+  {
+    if (strncmp(curr_line->label, label, MAX_LABEL_LENGTH) == 0)
+      return curr_line->line_no;
+    curr_line = curr_line->next;
+  }
+
+  return -1;
+}
+
+
+/*
+  TokenizeLine
 
   Replace all BASIC keywords and operators in line with the
   corresponding BASIC token.
 */
 void
-EncodeLine(byte_t* line)
+TokenizeLine(byte_t* line)
 {
   /* For each possible keyword, scan the line for the keyword, and
      replace any found keywords with the correct token */
@@ -616,7 +860,8 @@ EncodeLine(byte_t* line)
         continue;
       }
       
-      ReplaceStringWithByte((byte_t*)location, token_list[token_index], token_index+0x80);
+      byte_t token = token_index + 0x80;
+      ReplaceStringWithByte((byte_t*)location, token_list[token_index], token);
       ++location;
     }
   }
@@ -675,89 +920,6 @@ ReadLine(struct source_file* source_file, char* line)
 
 
 /*
-  StripWhitespace
-
-  Remove beginning and trailing whitespace from line.
-*/
-void
-StripWhitespace(char* line)
-{
-  if (strlen(line) < 1) return;
-
-  /* Skip past beginning whitespace */
-  u16 begin = 0;
-  while (line[begin] &&
-         (line[begin] == ' ' ||
-          line[begin] == '\t'))
-    ++begin;
-
-  /* Copy from beginning of non-whitespace to front of line */
-  if (begin > 0)
-    strcat(line, &line[begin]);
-  u16 end = strlen(line);
-  while (end > 0 &&
-         (line[end] == ' ' ||
-          line[end] == '\t'))
-    --end;
-  line[end+1] = '\0';
-}
-
-
-/*
-  Program_AddLine
-  
-  Add line to program line list
-*/
-void
-Program_AddLine(struct BASIC_program* program, struct BASIC_line* line)
-{
-  if (line->line_no > MAX_LINE_NUMBER)
-  {
-    SyntaxError(line->line_no, "Line number too high (maximum: %d)", MAX_LINE_NUMBER);
-  }
-
-  /* Generate a line number if none was provided */
-  if (line->line_no < 0)
-    line->line_no = program->last_line_no + 1;
-
-  /* Are we the first line? */
-  if (!program->first_line)
-  {
-    program->first_line = line;
-    program->last_line_no = line->line_no;
-    return;
-  }
-
-  /* We *are NOT* the first line */
-  struct BASIC_line* prev_line = 0;
-  struct BASIC_line* curr_line = program->first_line;
-  while (curr_line)
-  {
-    /* Check for duplicate line numbers */
-    if (line->line_no == curr_line->line_no)
-    {
-      fprintf(stderr, "%s\n", (char*)line->source_line);
-      SyntaxError(line->line_no, "Duplicate line number");
-    }
-    /* Sort by line numbers, ascending */
-    if (line->line_no < curr_line->line_no) 
-    {
-      prev_line->next = line;
-      line->next = curr_line;
-      program->last_line_no = line->line_no;
-      return;
-    }
-
-    prev_line = curr_line;
-    curr_line = curr_line->next;
-  }
-  /* We've reached the end of the list; append line */
-  prev_line->next = line;
-  program->last_line_no = line->line_no;
-}
-
-
-/*
   WritePRG
 
   Output program to file in C64 PRG format.
@@ -806,24 +968,55 @@ WritePRG(struct BASIC_program* program, char* path)
 
 
 /*
-  ParseSrc
+  DoLinesPass
 
-  Parse a source file. Tokenize BASIC keywords and convert ASCII to
-  PETSCII. Produce a list of program lines.
+  Parse a source file and split it into BASIC lines, filling out a
+  program structure.
 */
 void
-ParseSrc(struct BASIC_program* program, struct source_file* source_file)
+DoLinesPass(struct BASIC_program* program, struct source_file* source_file)
 {
+  /* TODO: Clean up this mess */
   memset(program, 0, sizeof(struct BASIC_program));
+
+  char current_label[MAX_LABEL_LENGTH+1];
+  memset(current_label, 0, MAX_LABEL_LENGTH+1);
+
   int len = 0;
   char line_buffer[MAX_SOURCE_LINE_LEN];
+  int source_line_number = 0;
   while ((len = ReadLine(source_file, line_buffer)) > -1)
   {
+    ++source_line_number;
+
     if (len == 0) continue;
     
     struct BASIC_line* line = (struct BASIC_line*)malloc(sizeof(struct BASIC_line));
     memset(line, 0, sizeof(struct BASIC_line));
     strncpy(line->source_line, line_buffer, MAX_SOURCE_LINE_LEN);
+    line->source_line_number = source_line_number;
+
+    /* Check if line is label. Advance to next non-blank line if
+       so. */
+    if (IsLabel(line_buffer))
+    {
+      /* Labels are case-insensitive */
+      ConvertLowercaseToUppercase(line_buffer);
+      /* Remove trailing colon from label */
+      line_buffer[strlen(line_buffer)-1] = '\0';
+      strncpy(current_label, line_buffer, MAX_LABEL_LENGTH);
+      continue;
+    }
+
+    if (strlen(current_label) > 0)
+    {
+      /* Store label in line. Fail if duplicate. */
+      if (Program_FindLineNumberByLabel(program, current_label) >= 0)
+      {
+        SyntaxError(-1, "Duplicate label: \"%s\"", current_label);
+      }
+      strncpy(line->label, current_label, MAX_LABEL_LENGTH);
+    }
 
     char* line_ptr = line_buffer;
     StripWhitespace(line_ptr);
@@ -836,14 +1029,153 @@ ParseSrc(struct BASIC_program* program, struct source_file* source_file)
       line->line_no = atoi(line_ptr);
     while (isdigit(*line_ptr)) ++line_ptr;
 
-    /* Encode line, translate to PETSCII, and store */
+    /* Tokenize line, translate to PETSCII, and store */
     StripWhitespace(line_ptr);
-    ConvertLowercaseToUppercase(line_ptr);
-    TranslateASCIIToPETSCII((byte_t*)line_ptr);
-    EncodeLine((byte_t*)line_ptr);
-    strncpy((char*)line->tokenized_line, line_ptr, MAX_ENCODED_LINE_LEN);
     Program_AddLine(program, line);
+    strncpy(current_label, "", 1);
   }
+}
+
+/*
+  DoTokenizePass
+  
+  Tokenize all BASIC keywords and operators in each line of program.
+*/
+void
+DoTokenizePass(struct BASIC_program* program)
+{
+  struct BASIC_line* line = program->first_line;
+  while (line)
+  {
+    byte_t temp_tokenized[MAX_SOURCE_LINE_LEN];
+    memset(temp_tokenized, 0, MAX_SOURCE_LINE_LEN);
+
+    strncpy((char*)temp_tokenized, line->source_line, MAX_SOURCE_LINE_LEN);
+    ConvertLowercaseToUppercase((char*)temp_tokenized);
+    TokenizeLine(temp_tokenized);
+    strncpy((char*)line->tokenized_line, (char*)temp_tokenized, MAX_SOURCE_LINE_LEN);
+
+    line = line->next;
+  }
+}
+
+/*
+  TranslateLabels
+
+  Replace all occurances of valid labels (in valid locations) with the
+  corresponding BASIC line number.
+*/
+void
+TranslateLabels(struct BASIC_program* program, byte_t* line)
+{
+  byte_t* line_ptr = line;
+
+  while (*line_ptr)
+  {
+    /* If token accepts labels (GOTO, GOSUB), check for label, and
+       replace with target line number if necessary */
+    byte_t token = *line_ptr;
+    ++line_ptr;
+    if (TranslateToken("GOTO")  != token &&
+        TranslateToken("GOSUB") != token)
+    {
+      continue;
+    }
+
+    /* First, skip whitespace, then continue looping if we don't
+       have an alphabetic character (i.e. we cannot be dealing with
+       a label). */
+    ++line_ptr;
+    char* label_start = (char*)line_ptr;
+    while (isspace(*label_start)) ++label_start;
+    if (!isalpha(*label_start))
+    {
+      ++label_start;
+    }
+
+    /* Find the longest possible string that could be a valid label */
+    char* label_end = label_start;
+    while (*label_end &&
+           IsValidLabelChar(*label_end))
+      ++label_end;
+    while (label_end > label_start)
+    {
+      char  temp_label[MAX_LABEL_LENGTH+1];
+
+      /* Is string too long to be a label? */
+      int temp_label_len = label_end - label_start + 1;
+      if (temp_label_len > MAX_LABEL_LENGTH)
+      {
+        --label_end;
+        continue;
+      }
+
+      strncpy(temp_label, label_start, temp_label_len);
+      s32 target_line_no = Program_FindLineNumberByLabel(program, temp_label);
+      if (target_line_no < 0)
+      {
+        /* Not an existing label */
+        --label_end;
+        continue;
+      }
+      /* We've found a label. Replace the text with the corresponding
+         line number */
+      char line_number_string[6];
+      sprintf(line_number_string, "%d", target_line_no);
+      ReplaceStringWithString(label_start, temp_label, line_number_string);
+      break;
+    }
+  }
+}
+
+
+/*
+  DoLabelPass
+
+  Run through program and replace label strings with the corresponding
+  line numbers where necessary.
+*/
+void
+DoLabelPass(struct BASIC_program* program)
+{
+  struct BASIC_line* curr_line = program->first_line;
+  while (curr_line)
+  {
+    TranslateLabels(program, curr_line->tokenized_line);
+    curr_line = curr_line->next;
+  }
+}
+
+/*
+  DoPETSCIIPass
+
+  Convert each program line from ASCII to C64 PETSCII
+*/
+void
+DoPETSCIIPass(struct BASIC_program* program)
+{
+  struct BASIC_line* curr_line = program->first_line;
+  while (curr_line)
+  {
+    TranslateASCIIToPETSCII((byte_t*)curr_line->tokenized_line);
+    curr_line = curr_line->next;
+  }
+}
+
+
+/*
+  ProgramCompile
+
+  Run through the necessary passes to compile a source file into a
+  tokenized, PETSCII-compatible program.
+ */
+void
+Program_Compile(struct BASIC_program* program, struct source_file* source_file)
+{
+  DoLinesPass(program, source_file);
+  DoTokenizePass(program);
+  DoLabelPass(program);
+  DoPETSCIIPass(program);
 }
 
 
@@ -931,6 +1263,7 @@ ProcessArgs(struct global_args* args, int argc, char* argv[])
 }
 
 
+
 int
 main(int argc, char* argv[])
 {
@@ -944,10 +1277,11 @@ main(int argc, char* argv[])
   struct source_file source_file;
   memset(&source_file, 0, sizeof(source_file));
   LoadSrc(&source_file, args.src_path);
-  ParseSrc(&program, &source_file);
+  Program_Compile(&program, &source_file);
+  printf("Compilation successful!\n");
   FixupOutputPath(&args);
   if (WritePRG(&program, args.prg_path))
-    printf("Wrote PRG file to %s\n", args.prg_path);
+    printf("Wrote PRG file to \"%s\"\n", args.prg_path);
 
   return 0;
 }

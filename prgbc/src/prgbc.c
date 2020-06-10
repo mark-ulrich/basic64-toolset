@@ -34,6 +34,8 @@ typedef u8  byte_t;
 #endif
 
 
+
+#define NUM_BASIC_TOKENS  0x4C
 #define MAX_LABEL_LENGTH  32
 
 
@@ -463,8 +465,13 @@ StripWhitespace(char* line)
 
   /* Copy from beginning of non-whitespace to front of line */
   if (begin > 0)
-    strcat(line, &line[begin]);
-  u16 end = strlen(line);
+  {
+    char temp_buffer[MAX_SOURCE_LINE_LEN];
+    memset(temp_buffer, 0, MAX_SOURCE_LINE_LEN);
+    strncpy(temp_buffer, &line[begin], MAX_SOURCE_LINE_LEN);
+    strncpy(line, temp_buffer, MAX_SOURCE_LINE_LEN);
+  }
+  u16 end = strlen(line)-1;
   while (end > 0 &&
          (line[end] == ' ' ||
           line[end] == '\t'))
@@ -749,14 +756,14 @@ Program_PrintLines(struct BASIC_program* program)
 void
 Program_AddLine(struct BASIC_program* program, struct BASIC_line* line)
 {
+  /* Generate a line number if none was provided */
+  if (line->line_no < 0)
+    line->line_no = program->last_line_no + 1;
+
   if (line->line_no > MAX_LINE_NUMBER)
   {
     SyntaxError(line->line_no, "Line number too high (maximum: %d)", MAX_LINE_NUMBER);
   }
-
-  /* Generate a line number if none was provided */
-  if (line->line_no < 0)
-    line->line_no = program->last_line_no + 1;
 
   /* Are we the first line? */
   if (!program->first_line)
@@ -810,12 +817,12 @@ Program_FindLineNumberByLabel(struct BASIC_program* program, char* label)
       !program->first_line)
     return -1; /* Empty or non-existing program */
 
-  struct BASIC_line* curr_line = program->first_line;
-  while (curr_line)
+  struct BASIC_line* line = program->first_line;
+  while(line)
   {
-    if (strncmp(curr_line->label, label, MAX_LABEL_LENGTH) == 0)
-      return curr_line->line_no;
-    curr_line = curr_line->next;
+    if (strncmp(line->label, label, MAX_LABEL_LENGTH) == 0)
+      return line->line_no;
+    line = line->next;
   }
 
   return -1;
@@ -831,39 +838,69 @@ Program_FindLineNumberByLabel(struct BASIC_program* program, char* label)
 void
 TokenizeLine(byte_t* line)
 {
-  /* For each possible keyword, scan the line for the keyword, and
-     replace any found keywords with the correct token */
-  for (u8 token_index = 0;
-       token_index < (sizeof(token_list) / sizeof(char*));
-       ++token_index)
+  /* 
+     For each byte, do a string compare against every
+     keyword/operator. If matched, replace the keyword/operator with
+     the correct token.
+
+     Note the following conditions:
+     
+     - If a REM statement is encountered, all remaining characters on
+     the line should be copied directly (not tokenized)
+       
+     - If a DATA statement is encountered, all characters should be
+     copied directly (not tokenized) up until either a ':' or end of
+     line
+  */
+  char* location = (char*)line;
+  while (*location)
   {
-    char* location = (char*)line;
-    while ((location = strstr(location, token_list[token_index])))
+    /* Don't tokenize anything within quotes */
+    if (*location == '"')
     {
-      /* Don't tokenize anything within quotes */
-      int quote_cnt = 0;
-      for (int i = 0;
-           (char*)&line[i] < location;
-           ++i)
-      {
-        if (line[i] == '"')
-          ++quote_cnt;
-      }
-      /* If quote count on line preceeding current location is odd, we
-         must be within quotes. Therefore, don't tokenize this
-         instance. */
-      if (quote_cnt & 1)
-      {
-        /* Skip ahead a character so strstr doesn't loop infinitely at
-           this spot */
-        ++location;   
-        continue;
-      }
-      
-      byte_t token = token_index + 0x80;
-      ReplaceStringWithByte((byte_t*)location, token_list[token_index], token);
       ++location;
+      while (*location &&
+             *(location++) != '"');
+      if (!*location)
+        return;
+      ++location;
+      if (!*location)
+        return;
     }
+
+    /* Test against all possible keywords */
+    for (int i = 0;
+         i < NUM_BASIC_TOKENS;
+         ++i)
+    {
+      char* keyword = token_list[i];
+      if (strncmp(location, keyword, strlen(keyword)) == 0)
+      {
+        byte_t token = TranslateToken(keyword);
+        ReplaceStringWithByte(line, keyword, token);
+
+        if (token == TranslateToken("REM"))
+        {
+          /* Skip entire line after REM */
+          return;
+        }
+        else if (token == TranslateToken("DATA"))
+        {
+          ++location;
+          /* Skip to colon or newline after DATA */
+          while (*location &&
+                 *location != ':')
+            ++location;
+          if (!*location)
+            return;
+        }
+
+        /* Keyword tokenized; break for loop */
+        break;
+      }
+    }
+      
+    ++location;
   }
 }
 
@@ -947,8 +984,8 @@ WritePRG(struct BASIC_program* program, char* path)
 
   u16 program_load_address = 0x0801;
   fwrite(&program_load_address, 2, 1, fp);
-  struct BASIC_line* curr_line = program->first_line;
   u16 next_line_addr = program_load_address;
+  struct BASIC_line* curr_line = program->first_line;
   while (curr_line)
   {
     u16 line_length = strlen((char*)curr_line->tokenized_line);
@@ -993,9 +1030,10 @@ DoLinesPass(struct BASIC_program* program, struct source_file* source_file)
     
     struct BASIC_line* line = (struct BASIC_line*)malloc(sizeof(struct BASIC_line));
     memset(line, 0, sizeof(struct BASIC_line));
+    line->source_line_number = source_line_number;
 
-    /* Check if line is label. Advance to next non-blank line if
-       so. */
+    /* Check if line is label. Store label and advance to next
+       non-blank line if so. */
     if (IsLabel(line_buffer))
     {
       /* Labels are case-insensitive */
@@ -1016,7 +1054,6 @@ DoLinesPass(struct BASIC_program* program, struct source_file* source_file)
       strncpy(line->label, current_label, MAX_LABEL_LENGTH);
     }
 
-    line->source_line_number = source_line_number;
 
     char* line_ptr = line_buffer;
     StripWhitespace(line_ptr);
@@ -1029,10 +1066,9 @@ DoLinesPass(struct BASIC_program* program, struct source_file* source_file)
       line->line_no = atoi(line_ptr);
     while (isdigit(*line_ptr)) ++line_ptr;
 
+    StripWhitespace(line_ptr);
     strncpy(line->source_line, line_ptr, MAX_SOURCE_LINE_LEN);
 
-    /* Tokenize line, translate to PETSCII, and store */
-    StripWhitespace(line_ptr);
     Program_AddLine(program, line);
     strncpy(current_label, "", 1);
   }

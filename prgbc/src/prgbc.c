@@ -388,6 +388,14 @@ struct source_file
   u32   pos;
 };
 
+struct global_args
+{
+  char*   src_path;
+  char*   prg_path;
+};
+struct global_args args;
+
+
 /*
   SyntaxError
   
@@ -404,10 +412,13 @@ SyntaxError(u16 line_no, char* msg, ...)
   fprintf(stderr, "SYNTAX ERROR: Line %u: %s\n", line_no, buffer);
 }
 
+
 /*
   ConvertLowercaseToUppercase
 
-  Convert all lowercase alpabetic characters in line to uppercase.
+  Convert all lowercase alpabetic characters in line to
+  uppercase. This is necessary for compatibility with the C64's
+  PETSCII character set.
 */
 void
 ConvertLowercaseToUppercase(char* line)
@@ -420,6 +431,7 @@ ConvertLowercaseToUppercase(char* line)
     ++line;
   }
 }
+
 
 /*
   ReplaceStringWithByte
@@ -451,6 +463,7 @@ ReplaceStringWithByte(byte_t* line, char* target, byte_t byte)
   return 1;
 }
 
+
 /*
   FindTokenIndex
 
@@ -470,6 +483,7 @@ FindTokenIndex(char* keyword)
   return -1;
 }
 
+
 /*
   FindPETSCIIPlaceholderIndex
 
@@ -488,6 +502,7 @@ FindPETSCIIPlaceholderIndex(char* placeholder)
   return -1;
 }
 
+
 /*
   TranslateToken
 
@@ -500,6 +515,7 @@ TranslateToken(char* keyword)
   byte_t token_index = FindTokenIndex(keyword);
   return token_index + 0x80;
 }
+
 
 /*
   TranslatePETSCIIPlaceholder
@@ -538,6 +554,7 @@ TranslateASCIIToPETSCII(byte_t* line)
     }
   }
 }
+
 
 /*
   EncodeLine
@@ -703,7 +720,7 @@ Program_AddLine(struct basic_line* program, struct basic_line* line)
 
   Output program to file in C64 PRG format.
 */
-void WritePRG(char* path)
+void WritePRG(struct basic_line* program, char* path)
 {
   FILE* fp;
   if (path)
@@ -718,7 +735,7 @@ void WritePRG(char* path)
 
   u16 program_load_address = 0x0801;
   fwrite(&program_load_address, 2, 1, fp);
-  struct basic_line* curr_line = program.next;
+  struct basic_line* curr_line = program->next;
   u16 next_line_addr = program_load_address;
   while (curr_line)
   {
@@ -736,40 +753,19 @@ void WritePRG(char* path)
 }
 
 
-int
-main(int argc, char* argv[])
+/*
+  ParseSrc
+
+  Parse a source file. Tokenize BASIC keywords and convert ASCII to
+  PETSCII. Produce a list of program lines.
+*/
+void
+ParseSrc(struct basic_line* program, struct source_file* source_file)
 {
-  char* path = 0;
-  /* allows for future expansion with command line args */
-  for(u8 argi = 1;
-      argi < argc;
-      ++argi)
-  {
-    if (argv[argi][0] != '-')
-    {
-      /* NOTE: This should always save the *last* non-option
-         (i.e. does not begin with '-') argument as the path of the
-         source file to load. Is this really the desirable
-         behavior? */
-      path = argv[argi];
-      continue;
-    }
-  }
-
-  if (!path)
-  {
-    fprintf(stderr, "Please provide a path to a BASIC source file\n");
-    exit(-1);
-  }
-
-  struct source_file source_file;
-  memset(&source_file, 0, sizeof(source_file));
-  LoadSrc(&source_file, path);
-
-  memset(&program, 0, sizeof(struct basic_line));
+  memset(program, 0, sizeof(struct basic_line));
   int len = 0;
   char line_buffer[MAX_SOURCE_LINE_LEN];
-  while ((len = ReadLine(&source_file, line_buffer)) > -1)
+  while ((len = ReadLine(source_file, line_buffer)) > -1)
   {
     if (len == 0) continue;
     
@@ -789,11 +785,24 @@ main(int argc, char* argv[])
     TranslateASCIIToPETSCII((byte_t*)line_ptr);
     EncodeLine((byte_t*)line_ptr);
     strncpy((char*)line->data, line_ptr, MAX_ENCODED_LINE_LEN);
-    Program_AddLine(&program, line);
+    Program_AddLine(program, line);
   }
+}
 
-  /* Fixup path. Remove extension. Also remove directories if present
-     so output file is in our program's working directory */
+
+/* 
+   FixupOutputPath
+
+   Fixup path if no output path was specified. Remove extension. Also
+   remove directories if present so output file is in our program's
+   working directory.
+*/
+void
+FixupOutputPath(struct global_args* args)
+{
+  if (args->prg_path) return;
+
+  char* path = args->src_path;
   char* dot = strrchr(path, '.');
   if (dot) *dot = '\0';
   /* *nix */
@@ -810,9 +819,66 @@ main(int argc, char* argv[])
     path[0] = '\0';
     strcat(path, slash+1);
   }
+}
 
-  WritePRG(path);
-  printf("Wrote PRG file to %s\n", path);
+
+/*
+  ProcessArgs
+
+  Process command line arguments. Store relevant arguments in args.
+*/
+void
+ProcessArgs(struct global_args* args, int argc, char* argv[])
+{
+  /* allows for future expansion with command line args */
+  for(u8 argi = 1;
+      argi < argc;
+      ++argi)
+  {
+    char* arg = argv[argi];
+
+    if (arg[0] != '-')
+    {
+      /* NOTE: This should always save the *last* non-option
+         (i.e. does not begin with '-') argument as the src_path of the
+         source file to load. Is this really the desirable
+         behavior? */
+      args->src_path = arg;
+      continue;
+    }
+
+    if (strcmp(arg, "--output-file") == 0 ||
+        strcmp(arg, "-o") == 0)
+    {
+      if (argi == argc)
+      {
+        fprintf(stderr, "Option %s requires an argument\n", arg);
+        exit(-1);
+      }
+      args->prg_path = argv[argi+1];
+      ++argi;
+    }
+  }
+}
+
+
+int
+main(int argc, char* argv[])
+{
+  ProcessArgs(&args, argc, argv);
+  if (!args.src_path)
+  {
+    fprintf(stderr, "Please provide a path to a BASIC source file\n");
+    exit(-1);
+  }
+
+  struct source_file source_file;
+  memset(&source_file, 0, sizeof(source_file));
+  LoadSrc(&source_file, args.src_path);
+  ParseSrc(&program, &source_file);
+  FixupOutputPath(&args);
+  WritePRG(&program, args.prg_path);
+  printf("Wrote PRG file to %s\n", args.prg_path);
 
   return 0;
 }

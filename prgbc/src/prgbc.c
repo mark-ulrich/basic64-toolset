@@ -993,8 +993,6 @@ DoLinesPass(struct BASIC_program* program, struct source_file* source_file)
     
     struct BASIC_line* line = (struct BASIC_line*)malloc(sizeof(struct BASIC_line));
     memset(line, 0, sizeof(struct BASIC_line));
-    strncpy(line->source_line, line_buffer, MAX_SOURCE_LINE_LEN);
-    line->source_line_number = source_line_number;
 
     /* Check if line is label. Advance to next non-blank line if
        so. */
@@ -1018,6 +1016,8 @@ DoLinesPass(struct BASIC_program* program, struct source_file* source_file)
       strncpy(line->label, current_label, MAX_LABEL_LENGTH);
     }
 
+    line->source_line_number = source_line_number;
+
     char* line_ptr = line_buffer;
     StripWhitespace(line_ptr);
 
@@ -1028,6 +1028,8 @@ DoLinesPass(struct BASIC_program* program, struct source_file* source_file)
     else
       line->line_no = atoi(line_ptr);
     while (isdigit(*line_ptr)) ++line_ptr;
+
+    strncpy(line->source_line, line_ptr, MAX_SOURCE_LINE_LEN);
 
     /* Tokenize line, translate to PETSCII, and store */
     StripWhitespace(line_ptr);

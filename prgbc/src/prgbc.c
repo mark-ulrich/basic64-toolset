@@ -15,6 +15,8 @@
 #include <sys/stat.h>
 
 
+typedef int32_t   s32;
+
 typedef uint8_t   u8;
 typedef uint16_t  u16;
 typedef uint32_t  u32;
@@ -383,14 +385,21 @@ char* token_list[] =
 #define MAX_SOURCE_LINE_LEN  2048
 #define MAX_ENCODED_LINE_LEN 80
 #define MAX_LINE_NUMBER      63999
-struct basic_line
+struct BASIC_line
 {
-  u16    line_no;
-  byte_t data[MAX_ENCODED_LINE_LEN];
+  s32    line_no;
+  char   source_line[MAX_SOURCE_LINE_LEN];
+  byte_t tokenized_line[MAX_ENCODED_LINE_LEN];
 
-  struct basic_line*   next;
+  struct BASIC_line*   next;
 };
-struct basic_line program;
+
+struct BASIC_program
+{
+  s32    last_line_no;
+  struct BASIC_line*   first_line;
+};
+struct BASIC_program program;
 
 struct source_file
 {
@@ -700,7 +709,7 @@ StripWhitespace(char* line)
   Add line to program line list
 */
 void
-Program_AddLine(struct basic_line* program, struct basic_line* line)
+Program_AddLine(struct BASIC_program* program, struct BASIC_line* line)
 {
   if (line->line_no > MAX_LINE_NUMBER)
   {
@@ -708,17 +717,26 @@ Program_AddLine(struct basic_line* program, struct basic_line* line)
   }
 
   /* Generate a line number if none was provided */
-  BOOL auto_line_no = FALSE;
   if (line->line_no < 0)
-    auto_line_no = TRUE;
-  struct basic_line* prev_line = program;
-  struct basic_line* curr_line = program->next;
-  while (!auto_line_no &&
-         curr_line)
+    line->line_no = program->last_line_no + 1;
+
+  /* Are we the first line? */
+  if (!program->first_line)
+  {
+    program->first_line = line;
+    program->last_line_no = line->line_no;
+    return;
+  }
+
+  /* We *are NOT* the first line */
+  struct BASIC_line* prev_line = 0;
+  struct BASIC_line* curr_line = program->first_line;
+  while (curr_line)
   {
     /* Check for duplicate line numbers */
     if (line->line_no == curr_line->line_no)
     {
+      fprintf(stderr, "%s\n", (char*)line->source_line);
       SyntaxError(line->line_no, "Duplicate line number");
     }
     /* Sort by line numbers, ascending */
@@ -726,6 +744,7 @@ Program_AddLine(struct basic_line* program, struct basic_line* line)
     {
       prev_line->next = line;
       line->next = curr_line;
+      program->last_line_no = line->line_no;
       return;
     }
 
@@ -733,9 +752,8 @@ Program_AddLine(struct basic_line* program, struct basic_line* line)
     curr_line = curr_line->next;
   }
   /* We've reached the end of the list; append line */
-  if (auto_line_no)
-    line->line_no = prev_line->line_no + 1;
   prev_line->next = line;
+  program->last_line_no = line->line_no;
 }
 
 
@@ -745,8 +763,15 @@ Program_AddLine(struct basic_line* program, struct basic_line* line)
   Output program to file in C64 PRG format.
 */
 BOOL
-WritePRG(struct basic_line* program, char* path)
+WritePRG(struct BASIC_program* program, char* path)
 {
+  if (!program ||
+      !program->first_line)
+  {
+    fprintf(stderr, "ERROR: Empty program\n");
+    return FALSE;
+  }
+
   FILE* fp;
   if (path)
     fp = fopen(path, "wb");
@@ -760,16 +785,16 @@ WritePRG(struct basic_line* program, char* path)
 
   u16 program_load_address = 0x0801;
   fwrite(&program_load_address, 2, 1, fp);
-  struct basic_line* curr_line = program->next;
+  struct BASIC_line* curr_line = program->first_line;
   u16 next_line_addr = program_load_address;
   while (curr_line)
   {
-    u16 line_length = strlen((char*)curr_line->data);
+    u16 line_length = strlen((char*)curr_line->tokenized_line);
     next_line_addr += 4 + line_length + 1;
     fwrite(&next_line_addr, 2, 1, fp);
     fwrite(&curr_line->line_no, 2, 1, fp);
     /* Line data including NULL byte */
-    fwrite(&curr_line->data, 1, line_length+1, fp); 
+    fwrite(&curr_line->tokenized_line, 1, line_length+1, fp); 
     curr_line = curr_line->next;
   }
   /* NULL address to terminate program */
@@ -787,34 +812,36 @@ WritePRG(struct basic_line* program, char* path)
   PETSCII. Produce a list of program lines.
 */
 void
-ParseSrc(struct basic_line* program, struct source_file* source_file)
+ParseSrc(struct BASIC_program* program, struct source_file* source_file)
 {
-  memset(program, 0, sizeof(struct basic_line));
+  memset(program, 0, sizeof(struct BASIC_program));
   int len = 0;
   char line_buffer[MAX_SOURCE_LINE_LEN];
   while ((len = ReadLine(source_file, line_buffer)) > -1)
   {
     if (len == 0) continue;
     
-    struct basic_line* line = (struct basic_line*)malloc(sizeof(struct basic_line));
-    memset(line, 0, sizeof(struct basic_line));
+    struct BASIC_line* line = (struct BASIC_line*)malloc(sizeof(struct BASIC_line));
+    memset(line, 0, sizeof(struct BASIC_line));
+    strncpy(line->source_line, line_buffer, MAX_SOURCE_LINE_LEN);
 
     char* line_ptr = line_buffer;
     StripWhitespace(line_ptr);
 
     /* Grab line number, then skip past digits. If no line number,
-       we'll automatically generate one. */
+       we'll set it to a negative to be automatically generated. */
     if (!isdigit(*line_ptr))
       line->line_no = -1;
-    line->line_no = atoi(line_ptr);
-    while (isdigit(*line_ptr++));
+    else
+      line->line_no = atoi(line_ptr);
+    while (isdigit(*line_ptr)) ++line_ptr;
 
     /* Encode line, translate to PETSCII, and store */
     StripWhitespace(line_ptr);
     ConvertLowercaseToUppercase(line_ptr);
     TranslateASCIIToPETSCII((byte_t*)line_ptr);
     EncodeLine((byte_t*)line_ptr);
-    strncpy((char*)line->data, line_ptr, MAX_ENCODED_LINE_LEN);
+    strncpy((char*)line->tokenized_line, line_ptr, MAX_ENCODED_LINE_LEN);
     Program_AddLine(program, line);
   }
 }
@@ -860,7 +887,6 @@ FixupOutputPath(struct global_args* args)
 void
 ProcessArgs(struct global_args* args, int argc, char* argv[])
 {
-  /* allows for future expansion with command line args */
   for(u8 argi = 1;
       argi < argc;
       ++argi)
@@ -869,24 +895,37 @@ ProcessArgs(struct global_args* args, int argc, char* argv[])
 
     if (arg[0] != '-')
     {
-      /* NOTE: This should always save the *last* non-option
-         (i.e. does not begin with '-') argument as the src_path of the
-         source file to load. Is this really the desirable
-         behavior? */
+      /* NOTE: This should always save the *last*
+         non-option/non-option-argument (i.e. does not begin with '-'
+         and is not an argument to a preceeding argument that *does*
+         begin with '-') argument as the src_path of the source file
+         to load. Is this really the desirable behavior? Perhaps save
+         a list of non-option arguments? */
       args->src_path = arg;
       continue;
     }
 
-    if (strcmp(arg, "--output-file") == 0 ||
-        strcmp(arg, "-o") == 0)
+    else if (strcmp(arg, "--output-file") == 0 ||
+             strcmp(arg, "-o") == 0)
     {
-      if (argi == argc)
+      /* TODO: Refactor this into a function for reuse with other
+         options */
+      char* equals = strchr(arg, '=');
+      if (!equals &&
+          argi == argc)
       {
         fprintf(stderr, "Option %s requires an argument\n", arg);
         exit(-1);
       }
-      args->prg_path = argv[argi+1];
-      ++argi;
+      if (equals)
+      {
+        args->prg_path = &equals[1];
+      }
+      else
+      {
+        args->prg_path = argv[argi+1];
+        ++argi;
+      }
     }
   }
 }

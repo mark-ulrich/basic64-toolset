@@ -21,6 +21,16 @@ typedef uint32_t  u32;
 
 typedef u8  byte_t;
 
+#ifndef BOOL 
+#define BOOL int
+#endif
+#ifndef TRUE
+#define TRUE  1
+#endif
+#ifndef FALSE
+#define FALSE 0
+#endif
+
 
 /* Translation table for keycodes between modern ASCII standard and
    C64 PETSCII */
@@ -372,6 +382,7 @@ char* token_list[] =
    PETSCII placeholder strings. */
 #define MAX_SOURCE_LINE_LEN  2048
 #define MAX_ENCODED_LINE_LEN 80
+#define MAX_LINE_NUMBER      63999
 struct basic_line
 {
   u16    line_no;
@@ -410,6 +421,8 @@ SyntaxError(u16 line_no, char* msg, ...)
   vsprintf(buffer, msg, args);
   va_end(args);
   fprintf(stderr, "SYNTAX ERROR: Line %u: %s\n", line_no, buffer);
+
+  exit(-1);
 }
 
 
@@ -689,15 +702,24 @@ StripWhitespace(char* line)
 void
 Program_AddLine(struct basic_line* program, struct basic_line* line)
 {
+  if (line->line_no > MAX_LINE_NUMBER)
+  {
+    SyntaxError(line->line_no, "Line number too high (maximum: %d)", MAX_LINE_NUMBER);
+  }
+
+  /* Generate a line number if none was provided */
+  BOOL auto_line_no = FALSE;
+  if (line->line_no < 0)
+    auto_line_no = TRUE;
   struct basic_line* prev_line = program;
   struct basic_line* curr_line = program->next;
-  while (curr_line)
+  while (!auto_line_no &&
+         curr_line)
   {
     /* Check for duplicate line numbers */
     if (line->line_no == curr_line->line_no)
     {
       SyntaxError(line->line_no, "Duplicate line number");
-      exit(-1);
     }
     /* Sort by line numbers, ascending */
     if (line->line_no < curr_line->line_no) 
@@ -711,6 +733,8 @@ Program_AddLine(struct basic_line* program, struct basic_line* line)
     curr_line = curr_line->next;
   }
   /* We've reached the end of the list; append line */
+  if (auto_line_no)
+    line->line_no = prev_line->line_no + 1;
   prev_line->next = line;
 }
 
@@ -720,7 +744,8 @@ Program_AddLine(struct basic_line* program, struct basic_line* line)
 
   Output program to file in C64 PRG format.
 */
-void WritePRG(struct basic_line* program, char* path)
+BOOL
+WritePRG(struct basic_line* program, char* path)
 {
   FILE* fp;
   if (path)
@@ -729,8 +754,8 @@ void WritePRG(struct basic_line* program, char* path)
     fp = stdout;
   if (!fp)
   {
-    fprintf(stderr, "ERROR: Unable to open file for writing\n");
-    return;
+    fprintf(stderr, "ERROR: Unable to open %s for writing\n", path);
+    return FALSE;
   }
 
   u16 program_load_address = 0x0801;
@@ -750,6 +775,8 @@ void WritePRG(struct basic_line* program, char* path)
   /* NULL address to terminate program */
   fputc(0, fp);
   fputc(0, fp);
+
+  return TRUE;
 }
 
 
@@ -775,7 +802,10 @@ ParseSrc(struct basic_line* program, struct source_file* source_file)
     char* line_ptr = line_buffer;
     StripWhitespace(line_ptr);
 
-    /* Grab line number, then skip past digits */
+    /* Grab line number, then skip past digits. If no line number,
+       we'll automatically generate one. */
+    if (!isdigit(*line_ptr))
+      line->line_no = -1;
     line->line_no = atoi(line_ptr);
     while (isdigit(*line_ptr++));
 
@@ -877,8 +907,8 @@ main(int argc, char* argv[])
   LoadSrc(&source_file, args.src_path);
   ParseSrc(&program, &source_file);
   FixupOutputPath(&args);
-  WritePRG(&program, args.prg_path);
-  printf("Wrote PRG file to %s\n", args.prg_path);
+  if (WritePRG(&program, args.prg_path))
+    printf("Wrote PRG file to %s\n", args.prg_path);
 
   return 0;
 }

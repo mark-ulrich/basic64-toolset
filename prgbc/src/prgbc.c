@@ -780,6 +780,7 @@ Program_AddLine(struct BASIC_program* program, struct BASIC_line* line)
     SyntaxError(line->line_no, "Line number too high (maximum: %d)", MAX_LINE_NUMBER);
   }
 
+  printf("Adding Line: \"%d %s\"\n", line->line_no, line->source_line);
   /* Are we the first line? */
   if (!program->first_line)
   {
@@ -1084,6 +1085,9 @@ DoLinesPass(struct BASIC_program* program, struct source_file* source_file)
     StripWhitespace(line_ptr);
     strncpy(line->source_line, line_ptr, MAX_SOURCE_LINE_LEN);
 
+    strncpy((char*)line->tokenized_line, line->source_line, MAX_SOURCE_LINE_LEN);
+    ConvertLowercaseToUppercase((char*)line->tokenized_line);
+
     Program_AddLine(program, line);
     strncpy(current_label, "", 1);
   }
@@ -1100,13 +1104,7 @@ DoTokenizePass(struct BASIC_program* program)
   struct BASIC_line* line = program->first_line;
   while (line)
   {
-    byte_t temp_tokenized[MAX_SOURCE_LINE_LEN];
-    memset(temp_tokenized, 0, MAX_SOURCE_LINE_LEN);
-
-    strncpy((char*)temp_tokenized, line->source_line, MAX_SOURCE_LINE_LEN);
-    ConvertLowercaseToUppercase((char*)temp_tokenized);
-    TokenizeLine(temp_tokenized);
-    strncpy((char*)line->tokenized_line, (char*)temp_tokenized, MAX_SOURCE_LINE_LEN);
+    TokenizeLine(line->tokenized_line);
 
     line = line->next;
   }
@@ -1200,6 +1198,26 @@ DoLabelPass(struct BASIC_program* program)
 }
 
 /*
+  DoPETSCIIPlaceholderPass
+
+  Replace all PETSCII placeholder strings with correct PETSCII
+  code. This needs to be called before the tokenize pass so that the
+  curly braces are not translated to PETSCII.
+*/
+
+void
+DoPETSCIIPlaceholderPass(struct BASIC_program* program)
+{
+  struct BASIC_line* curr_line = program->first_line;
+  while (curr_line)
+  {
+    TranslateASCIIToPETSCII((byte_t*)curr_line->tokenized_line);
+    curr_line = curr_line->next;
+  }
+}
+
+
+/*
   DoPETSCIIPass
 
   Convert each program line from ASCII to C64 PETSCII
@@ -1226,6 +1244,7 @@ void
 Program_Compile(struct BASIC_program* program, struct source_file* source_file)
 {
   DoLinesPass(program, source_file);
+  DoPETSCIIPlaceholderPass(program);
   DoTokenizePass(program);
   DoLabelPass(program);
   DoPETSCIIPass(program);

@@ -190,7 +190,7 @@ char* PETSCII_table[] =
     /* 90 */  "{PETSCII_BLACK}",
     /* 91 */  "{PETSCII_CRSR_UP}",
     /* 92 */  "{PETSCII_RVS_OFF}",
-    /* 93 */  "{PETSCII_CLEAR}",
+    /* 93 */  "{PETSCII_CLR}",
     /* 94 */  "{PETSCII_INSERT}",
     /* 95 */  "{PETSCII_BROWN}",
     /* 96 */  "{PETSCII_PINK}",
@@ -471,7 +471,10 @@ StripWhitespace(char* line)
     strncpy(temp_buffer, &line[begin], MAX_SOURCE_LINE_LEN);
     strncpy(line, temp_buffer, MAX_SOURCE_LINE_LEN);
   }
-  u16 end = strlen(line)-1;
+  if (strlen(line) < 1) return;
+
+  u16 end = strlen(&line[begin])-1;
+  printf("[StripWhitespace]: \"%s\"\n", line);
   while (end > 0 &&
          (line[end] == ' ' ||
           line[end] == '\t'))
@@ -685,15 +688,26 @@ TranslateToken(char* keyword)
 /*
   TranslatePETSCIIPlaceholder
 
-  Translate a BASIC keyword/operator into the corresponding BASIC
-  token.
+  Translate a PETSCII placeholder string to the correct PETSCII byte.
 */
 int
-TranslatePETSCIIPlaceholder(char* keyword)
+TranslatePETSCIIPlaceholder(char* string)
 {
-  byte_t placeholder_index = FindPETSCIIPlaceholderIndex(keyword);
-  return placeholder_index;
+  if (string[0] != '{')
+    return -1;
+
+  int len = strlen(string);
+  char* begin = &string[1];
+  char* end   = &string[len-1];
+  *end = 0;
+  char temp_buffer[32];
+  strncpy(temp_buffer, begin, len-2);
+  temp_buffer[len-1] = '\0';
+  printf("[TPP]: temp_buffer=\"%s\"\n", temp_buffer);
+
+  return 0;
 }
+
 
 /*
   TranslateASCIIToPETSCII

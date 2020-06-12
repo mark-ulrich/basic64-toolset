@@ -873,12 +873,10 @@ TokenizeLine(byte_t* line)
     {
       ++location;
       while (*location &&
-             *(location++) != '"');
-      if (!*location)
-        return;
+             *location != '"')
+        ++location;
       ++location;
-      if (!*location)
-        return;
+      continue;
     }
 
     /* Test against all possible keywords */

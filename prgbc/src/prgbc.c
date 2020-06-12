@@ -60,7 +60,7 @@ char* PETSCII_table[] =
     /* 0E */  "{PETSCII_LWR_UPR_CHARSET}",
     /* 0F */  "{PETSCII_0F}",
     /* 10 */  "{PETSCII_10}",
-    /* 11 */  "{PETSCII_CRSR_DOWN}",
+    /* 11 */  "{PETSCII_DOWN}",
     /* 12 */  "{PETSCII_RVS}",
     /* 13 */  "{PETSCII_HOME}",
     /* 14 */  "{PETSCII_DELETE}",
@@ -72,7 +72,7 @@ char* PETSCII_table[] =
     /* 1A */  "{PETSCII_1A}",
     /* 1B */  "{PETSCII_1B}",
     /* 1C */  "{PETSCII_RED}",
-    /* 1D */  "{PETSCII_CRSR_RIGHT}",
+    /* 1D */  "{PETSCII_RIGHT}",
     /* 1E */  "{PETSCII_GREEN}",
     /* 1F */  "{PETSCII_BLUE}",
     /* 20 */  " ",
@@ -135,7 +135,7 @@ char* PETSCII_table[] =
     /* 59 */  "Y",
     /* 5A */  "Z",
     /* 5B */  "[",
-    /* 5C */  "{PETSCII_POUND_STERLING}",
+    /* 5C */  "{PETSCII_POUNDSTERLING}",
     /* 5D */  "]",
     /* 5E */  "^", /* {PETSCII_ARROW_UP} */
     /* 5F */  "{PETSCII_ARROW_LEFT}",
@@ -188,7 +188,7 @@ char* PETSCII_table[] =
     /* 8E */  "{PETSCII_UPR_GFX_CHARSET}",
     /* 8F */  "{PETSCII_GFX_8F}",
     /* 90 */  "{PETSCII_BLACK}",
-    /* 91 */  "{PETSCII_CRSR_UP}",
+    /* 91 */  "{PETSCII_UP}",
     /* 92 */  "{PETSCII_OFF}",
     /* 93 */  "{PETSCII_CLR}",
     /* 94 */  "{PETSCII_INSERT}",
@@ -200,7 +200,7 @@ char* PETSCII_table[] =
     /* 9A */  "{PETSCII_LT_BLUE}",
     /* 9B */  "{PETSCII_LT_GREY}",
     /* 9C */  "{PETSCII_PURPLE}",
-    /* 9D */  "{PETSCII_CRSR_LEFT}",
+    /* 9D */  "{PETSCII_LEFT}",
     /* 9E */  "{PETSCII_YELLOW}",
     /* 9F */  "{PETSCII_CYAN}",
     /* A0 */  "{PETSCII_GFX_F0}",
@@ -418,6 +418,7 @@ struct global_args
 {
   char*   src_path;
   char*   prg_path;
+  u16     load_address;
 };
 struct global_args args;
 
@@ -974,7 +975,7 @@ ReadLine(struct source_file* source_file, char* line)
   Output program to file in C64 PRG format.
 */
 BOOL
-WritePRG(struct BASIC_program* program, char* path)
+WritePRG(struct BASIC_program* program, u16 load_address, char* path)
 {
   if (!program ||
       !program->first_line)
@@ -994,9 +995,12 @@ WritePRG(struct BASIC_program* program, char* path)
     return FALSE;
   }
 
-  u16 program_load_address = 0x0801;
-  fwrite(&program_load_address, 2, 1, fp);
-  u16 next_line_addr = program_load_address;
+#define DEFAULT_LOAD_ADDRESS 0x0801
+  if (load_address == 0)
+    load_address = DEFAULT_LOAD_ADDRESS;
+
+  fwrite(&load_address, 2, 1, fp);
+  u16 next_line_addr = load_address;
   struct BASIC_line* curr_line = program->first_line;
   while (curr_line)
   {
@@ -1346,6 +1350,27 @@ ProcessArgs(struct global_args* args, int argc, char* argv[])
         ++argi;
       }
     }
+
+    else if (strcmp(arg, "--load-address") == 0 ||
+             strcmp(arg, "-l") == 0)
+    {
+      char* equals = strchr(arg, '=');
+      if (!equals &&
+          argi == argc)
+      {
+        fprintf(stderr, "Option %s requires an argument\n", arg);
+        exit(-1);
+      }
+      if (equals)
+      {
+        args->load_address = atoi(&equals[1]);
+      }
+      else
+      {
+        args->load_address = atoi(argv[argi+1]);
+        ++argi;
+      }
+    }
   }
 }
 
@@ -1367,7 +1392,7 @@ main(int argc, char* argv[])
   Program_Compile(&program, &source_file);
   printf("Compilation successful!\n");
   FixupOutputPath(&args);
-  if (WritePRG(&program, args.prg_path))
+  if (WritePRG(&program, args.load_address, args.prg_path))
     printf("Wrote PRG file to \"%s\"\n", args.prg_path);
 
   return 0;

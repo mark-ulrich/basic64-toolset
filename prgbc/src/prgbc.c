@@ -455,7 +455,6 @@ void
 StripWhitespace(char* line)
 {
   if (strlen(line) < 1) return;
-  printf("[StripWhitespce]: BEFORE: \"%s\"\n", line);
 
   /* Skip past beginning whitespace */
   u16 begin = 0;
@@ -480,8 +479,6 @@ StripWhitespace(char* line)
           line[end] == '\t'))
     --end;
   line[end+1] = '\0';
-
-  printf("[StripWhitespce]: AFTER:  \"%s\"\n", line);
 }
 
 
@@ -780,7 +777,6 @@ Program_AddLine(struct BASIC_program* program, struct BASIC_line* line)
     SyntaxError(line->line_no, "Line number too high (maximum: %d)", MAX_LINE_NUMBER);
   }
 
-  printf("Adding Line: \"%d %s\"\n", line->line_no, line->source_line);
   /* Are we the first line? */
   if (!program->first_line)
   {
@@ -1040,6 +1036,10 @@ DoLinesPass(struct BASIC_program* program, struct source_file* source_file)
   int source_line_number = 0;
   while ((len = ReadLine(source_file, line_buffer)) > -1)
   {
+    StripWhitespace(line_buffer);
+    len = strlen(line_buffer);
+    if (len < 1) continue;
+    
     ++source_line_number;
 
     if (len == 0) continue;

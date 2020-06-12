@@ -474,7 +474,6 @@ StripWhitespace(char* line)
   if (strlen(line) < 1) return;
 
   u16 end = strlen(&line[begin])-1;
-  printf("[StripWhitespace]: \"%s\"\n", line);
   while (end > 0 &&
          (line[end] == ' ' ||
           line[end] == '\t'))
@@ -703,7 +702,6 @@ TranslatePETSCIIPlaceholder(char* string)
   char temp_buffer[32];
   strncpy(temp_buffer, begin, len-2);
   temp_buffer[len-1] = '\0';
-  printf("[TPP]: temp_buffer=\"%s\"\n", temp_buffer);
 
   return 0;
 }
@@ -1243,22 +1241,37 @@ FixupOutputPath(struct global_args* args)
 {
   if (args->prg_path) return;
 
-  char* path = args->src_path;
-  char* dot = strrchr(path, '.');
-  if (dot) *dot = '\0';
+  int path_len = strlen(args->src_path);
+  args->prg_path = (char*)malloc(path_len+1);
+  strncpy(args->prg_path, args->src_path , path_len);
+  char* path = args->prg_path;
+
+  /* Remove leading directory in path (*nix and Windows path
+     separators) */
   /* *nix */
   char* slash = strrchr(path, '/');
-  if (slash)
+  if (slash &&
+      slash[1])    /* In case slash is final character */
   {
-    path[0] = '\0';
-    strcat(path, slash+1);
+    path = slash;
   }
   /* Windows */
   slash = strrchr(path, '\\');
-  if (slash)
+  if (slash &&
+      slash[1])    /* In case slash is final character */
   {
-    path[0] = '\0';
-    strcat(path, slash+1);
+    path = slash;
+  }
+
+  char* dot = strrchr(path, '.');
+  if (dot) *dot = '\0';
+
+  /* Check if file extension exists in source file path so we don't
+     overwrite the source file */
+  if (strcmp(path, args->src_path) == 0)
+  {
+    fprintf(stderr, "ERROR: Attempting to overwrite source file. Please provide an output file path.\n");
+    exit(-1);
   }
 }
 

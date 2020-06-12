@@ -455,6 +455,7 @@ void
 StripWhitespace(char* line)
 {
   if (strlen(line) < 1) return;
+  printf("[StripWhitespce]: BEFORE: \"%s\"\n", line);
 
   /* Skip past beginning whitespace */
   u16 begin = 0;
@@ -473,12 +474,14 @@ StripWhitespace(char* line)
   }
   if (strlen(line) < 1) return;
 
-  u16 end = strlen(&line[begin])-1;
+  u16 end = strlen(line)-1;
   while (end > 0 &&
          (line[end] == ' ' ||
           line[end] == '\t'))
     --end;
   line[end+1] = '\0';
+
+  printf("[StripWhitespce]: AFTER:  \"%s\"\n", line);
 }
 
 
